@@ -9,7 +9,6 @@
 
 #include <iostream>
 #include <fstream>
-#include <cmath>
 #include <stdlib.h>
 #include <time.h>
 #include "techniques.h"
@@ -17,7 +16,9 @@
 #include "linear_models.h"
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
-// 所以应该让linear__modesl的计算并行化在GPU
+#include <thrust/reduce.h>
+#include <thrust/execution_policy.h>
+#include "math.h"
 techniques::techniques(){};
 
 /*
@@ -27,17 +28,27 @@ lm becomes class variable, calls device function like below
     cudaMemcopy(dmodel, model + j, 1*sizeof(double), cudaMemcpyHostToDevice);
 */
 
-__global__ void materializekl(double* dY, double* dH, double* dX, double* dmul_arr, long row_num) {
+__global__ void gradientkl(double* dY, double* dH, double* dX, double* dmul_arr, long row_num) {
     int Idx = threadIdx.x + blockDim.x * blockIdx.x;
     if(Idx < row_num) {
-        dmul_arr[Idx] =  -(dY[Idx]/(1+pow(exp(1.0),dY[Idx]*dH[Idx])))*dX[Idx];
+        dmul_arr[Idx] =  -dY[Idx]/(1+exp(dY[Idx]*dH[Idx]))*dX[Idx];
+    }
+    
+}
+
+__global__ void backkl(double* dH, double* dX, double diff, long row_num) {
+	int Idx = threadIdx.x + blockDim.x * blockIdx.x;
+    if(Idx < row_num) {
+        // dH[Idx] = dH[Idx] + diff * dX[Idx];
+        dH[Idx] = __fma_rn(diff, dX[Idx], dH[Idx]);
     }
 }
 
-__global__ void backkl(double* dmodel, double* dH, double* dX, double diff, double step_size, long row_num) {
+__global__ void losskl(double* dY, double* dH, double* dFcur, long row_num) {
 	int Idx = threadIdx.x + blockDim.x * blockIdx.x;
     if(Idx < row_num) {
-        dH[Idx] = dH[Idx] + diff * dX[Idx];
+        // dFcur[Idx] = log1pf(-expf(dY[Idx]*dH[Idx]));
+        dFcur[Idx] = log(1 + exp(-dY[Idx]*dH[Idx]));
     }
 }
 /**
@@ -65,7 +76,12 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
     double *H;
     double *X;
     double *mul_arr;
-    
+
+    cudaEvent_t startEvent_exc, stopEvent_exc;
+	cudaEventCreate(&startEvent_exc);
+	cudaEventCreate(&stopEvent_exc);
+	float elapsedTime_exc;
+
     //setting
     double step_size = _setting.step_size;
     
@@ -83,16 +99,20 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
     double *dH;
     double *dX;
     double *dmul_arr;
-    double *dmodel;
+    double *dFcur;
+    // double *dmodel;
 	// Allocate Device variables need for computing
     cudaMalloc((void**)&dY, row_num*sizeof(double));
     cudaMalloc((void**)&dH, row_num*sizeof(double));
     cudaMalloc((void**)&dX, row_num*sizeof(double)); 
     cudaMalloc((void**)&dmul_arr, row_num*sizeof(double));   //临时变量          
-    cudaMalloc((void**)&dmodel, 1*sizeof(double));           //计算变量                        
-    
+    // cudaMalloc((void**)&dmodel, 1*sizeof(double));           //计算变量                        
+    cudaMalloc((void**)&dFcur, row_num*sizeof(double));
     cudaMemset(dH, 0, row_num*sizeof(double));
+	// kernel parameter
     const int threadsPerBlock = 1024;
+    const int blocksPerGrid = row_num/threadsPerBlock + 1;
+    
     double F = 0.00;
     double F_partial = 0.00;
     double r_curr = 0.00;
@@ -100,17 +120,14 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
     int k = 0;
     
     
-    //cout<<"Model: "<<endl;
     for(int i = 0; i < feature_num; i ++)
     {
         model[i] = 0.00;
-        //cout<<model[i]<< " ";
     }
-    //cout<<endl;
-    
-
-// IO, 也要arrange好再往Machine拷贝数据
-// 每次只能独一列怎么去加速，每次更新一个坐标，每次都要分别transfer，可能就trade掉了
+   
+	// Fetch the label column 1 time, leave it on GPU memory
+	// May move to shared memory to improve efficiency
+ 
     DM.fetchColumn(fields[1], row_num, Y);
     cudaMemcpy(dY, Y, row_num*sizeof(double), cudaMemcpyHostToDevice);
     //First do Logistic Regression
@@ -122,31 +139,39 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
             F_partial = 0.00;
             //Fetch the each column and store the current column into X
             DM.fetchColumn(fields[2+j], row_num, X);
+	        
+            cudaEventRecord(startEvent_exc,0); // staring timing for exclusive
             cudaMemcpy(dX, X, row_num*sizeof(double), cudaMemcpyHostToDevice);
-            cudaMemcpy(dmodel, model + j, 1*sizeof(double), cudaMemcpyHostToDevice);
-            const int blocksPerGrid = row_num/threadsPerBlock + 1;
             // launch the kernal only 1 time
-            materializekl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul_arr, row_num);
+            cudaEventRecord(stopEvent_exc,0);  // ending timing for exclusive
+            cudaEventSynchronize(stopEvent_exc);   
+            cudaEventElapsedTime(&elapsedTime_exc, startEvent_exc, stopEvent_exc);
+            cout << "Gradient recuce time " << elapsedTime_exc << endl;
+
+            gradientkl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul_arr, row_num);
 			cudaDeviceSynchronize();
-            cudaMemcpy(mul_arr, dmul_arr, row_num*sizeof(double), cudaMemcpyDeviceToHost);
-			
-            for(long i = 0; i < row_num; i++) {
-                F_partial += mul_arr[i];
-            }
-            cudaMemcpy(model + j, dmodel, 1*sizeof(double), cudaMemcpyDeviceToHost);                        
+
+            // Reduce to get the sum of current gradient
+			cudaMemcpy(mul_arr, dmul_arr, row_num*sizeof(double), cudaMemcpyDeviceToHost);
+			F_partial = thrust::reduce(thrust::device, dmul_arr, dmul_arr + row_num, 0.0);
+
+            // for(long i = 0; i < row_num; i++) {
+            //     F_partial += mul_arr[i];
+            // }
+
             double W_j = model[j];
             //Update the current coordinate
             model[j]  = model[j] - step_size * F_partial;
             double diff = model[j] - W_j;
-            cudaMemcpy(dmodel, model + j, 1*sizeof(double), cudaMemcpyHostToDevice);
-            backkl<<<blocksPerGrid, threadsPerBlock>>>(dmodel, dH, dX, diff, step_size, row_num);
+            
+            backkl<<<blocksPerGrid, threadsPerBlock>>>(dH, dX, diff, row_num);
             cudaDeviceSynchronize();
-            cudaMemcpy(model + j, dmodel, 1*sizeof(double), cudaMemcpyDeviceToHost);            
-            cudaMemcpy(H, dH, row_num*sizeof(double), cudaMemcpyDeviceToHost);										
-        }     
+        }
+        cudaMemcpy(H, dH, row_num*sizeof(double), cudaMemcpyDeviceToHost);										
         r_prev = F;
         //Caculate F
         F = 0.00;
+        /*
         for(long i = 0; i < row_num ; i ++)
         {
             double tmp = lm.Fe_lr(Y[i],H[i]);
@@ -158,8 +183,13 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
             
             F += tmp;
         }
+        */
         
+        losskl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dFcur, row_num);
+        
+        F = thrust::reduce(thrust::device, dFcur, dFcur + row_num, 0.0);
         r_curr = F;
+
         k++;
         cout<<"Model: "<<endl;
         
@@ -177,7 +207,7 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
     cudaFree(dH);
     cudaFree(dX);
     cudaFree(dmul_arr);
-    cudaFree(dmodel);
+    // cudaFree(dmodel);
     delete [] Y;
     delete [] X;
     delete [] H;
