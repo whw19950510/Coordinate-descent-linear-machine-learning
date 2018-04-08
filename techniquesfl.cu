@@ -25,17 +25,18 @@ techniques::techniques(){};
 lm becomes class variable, calls device function like below
 //Compute the partial gradient
 // if to avoid overhead, may be here not much dimension of this single model, just update paramas in the host
-    cudaMemcopy(dmodel, model + j, 1*sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcopy(dmodel, model + j, 1*sizeof(float), cudaMemcpyHostToDevice);
 */
 
-__global__ void gradientkl(double* dY, double* dH, double* dX, double* dmul_arr, long row_num) {
+__global__ void gradientkl(float* dY, float* dH, float* dX, float* dmul_arr, long row_num) {
     int Idx = threadIdx.x + blockDim.x * blockIdx.x;
     if(Idx < row_num) {
         dmul_arr[Idx] =  -dY[Idx]/(1+exp(dY[Idx]*dH[Idx]))*dX[Idx];
     }
+    
 }
 
-__global__ void backkl(double* dH, double* dX, double diff, long row_num) {
+__global__ void backkl(float* dH, float* dX, float diff, long row_num) {
 	int Idx = threadIdx.x + blockDim.x * blockIdx.x;
     if(Idx < row_num) {
         // dH[Idx] = dH[Idx] + diff * dX[Idx];
@@ -43,7 +44,7 @@ __global__ void backkl(double* dH, double* dX, double diff, long row_num) {
     }
 }
 
-__global__ void losskl(double* dY, double* dH, double* dFcur, long row_num) {
+__global__ void losskl(float* dY, float* dH, float* dFcur, long row_num) {
 	int Idx = threadIdx.x + blockDim.x * blockIdx.x;
     if(Idx < row_num) {
         // dFcur[Idx] = log1pf(-expf(dY[Idx]*dH[Idx]));
@@ -61,7 +62,7 @@ __global__ void losskl(double* dY, double* dH, double* dFcur, long row_num) {
 
  **/
 //Just Logistic Regression by now
-__host__ void techniques::materialize(string table_T, setting _setting, double *model)
+__host__ void techniques::materialize(string table_T, setting _setting, float *model)
 {
     DataManagement DM;
     DM.message("Start materialize");
@@ -71,10 +72,10 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
     int feature_num = (int)tableInfo[1];
     long row_num = 100000; //tableInfo[2];
     
-    double *Y;
-    double *H;
-    double *X;
-    double *mul_arr;
+    float *Y;
+    float *H;
+    float *X;
+    float *mul_arr;
 
     cudaEvent_t startEvent_exc, stopEvent_exc;
 	cudaEventCreate(&startEvent_exc);
@@ -82,40 +83,40 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
 	float elapsedTime_exc;
 
     //setting
-    double step_size = _setting.step_size;
+    float step_size = _setting.step_size;
     
     //Allocate the memory to the model
-    model = new double[feature_num];
+    model = new float[feature_num];
     //Allocate the memory to the label Array
-    Y = new double[row_num];
+    Y = new float[row_num];
     //Allocate the memory to H
-    H = new double[row_num];
+    H = new float[row_num];
     //Allocate the memory to X
-    X = new double[row_num];
+    X = new float[row_num];
     // Temp variable for recording the multiply value
-	mul_arr = new double[row_num];
-    double *dY;
-    double *dH;
-    double *dX;
-    double *dmul_arr;
-    double *dFcur;
-    // double *dmodel;
+	mul_arr = new float[row_num];
+    float *dY;
+    float *dH;
+    float *dX;
+    float *dmul_arr;
+    float *dFcur;
+    // float *dmodel;
 	// Allocate Device variables need for computing
-    cudaMalloc((void**)&dY, row_num*sizeof(double));
-    cudaMalloc((void**)&dH, row_num*sizeof(double));
-    cudaMalloc((void**)&dX, row_num*sizeof(double)); 
-    cudaMalloc((void**)&dmul_arr, row_num*sizeof(double));   //临时变量          
-    // cudaMalloc((void**)&dmodel, 1*sizeof(double));           //计算变量                        
-    cudaMalloc((void**)&dFcur, row_num*sizeof(double));
-    cudaMemset(dH, 0, row_num*sizeof(double));
+    cudaMalloc((void**)&dY, row_num*sizeof(float));
+    cudaMalloc((void**)&dH, row_num*sizeof(float));
+    cudaMalloc((void**)&dX, row_num*sizeof(float)); 
+    cudaMalloc((void**)&dmul_arr, row_num*sizeof(float));   //临时变量          
+    // cudaMalloc((void**)&dmodel, 1*sizeof(float));           //计算变量                        
+    cudaMalloc((void**)&dFcur, row_num*sizeof(float));
+    cudaMemset(dH, 0, row_num*sizeof(float));
 	// kernel parameter
     const int threadsPerBlock = 1024;
     const int blocksPerGrid = row_num/threadsPerBlock + 1;
     
-    double F = 0.00;
-    double F_partial = 0.00;
-    double r_curr = 0.00;
-    double r_prev = 0.00;
+    float F = 0.00;
+    float F_partial = 0.00;
+    float r_curr = 0.00;
+    float r_prev = 0.00;
     int k = 0;
     
     
@@ -128,7 +129,7 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
 	// May move to shared memory to improve efficiency
  
     DM.fetchColumn(fields[1], row_num, Y);
-    cudaMemcpy(dY, Y, row_num*sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(dY, Y, row_num*sizeof(float), cudaMemcpyHostToDevice);
     //First do Logistic Regression
     do
     {
@@ -140,7 +141,7 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
             DM.fetchColumn(fields[2+j], row_num, X);
 	        
             cudaEventRecord(startEvent_exc,0); // staring timing for exclusive
-            cudaMemcpy(dX, X, row_num*sizeof(double), cudaMemcpyHostToDevice);
+            cudaMemcpy(dX, X, row_num*sizeof(float), cudaMemcpyHostToDevice);
             // launch the kernal only 1 time
             cudaEventRecord(stopEvent_exc,0);  // ending timing for exclusive
             cudaEventSynchronize(stopEvent_exc);   
@@ -151,29 +152,29 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
 			cudaDeviceSynchronize();
 
             // Reduce to get the sum of current gradient
-			cudaMemcpy(mul_arr, dmul_arr, row_num*sizeof(double), cudaMemcpyDeviceToHost);
+			cudaMemcpy(mul_arr, dmul_arr, row_num*sizeof(float), cudaMemcpyDeviceToHost);
 			F_partial = thrust::reduce(thrust::device, dmul_arr, dmul_arr + row_num, 0.0);
 
             // for(long i = 0; i < row_num; i++) {
             //     F_partial += mul_arr[i];
             // }
 
-            double W_j = model[j];
+            float W_j = model[j];
             //Update the current coordinate
             model[j]  = model[j] - step_size * F_partial;
-            double diff = model[j] - W_j;
+            float diff = model[j] - W_j;
             
             backkl<<<blocksPerGrid, threadsPerBlock>>>(dH, dX, diff, row_num);
             cudaDeviceSynchronize();
         }
-        cudaMemcpy(H, dH, row_num*sizeof(double), cudaMemcpyDeviceToHost);										
+        cudaMemcpy(H, dH, row_num*sizeof(float), cudaMemcpyDeviceToHost);										
         r_prev = F;
         //Caculate F
         F = 0.00;
         /*
         for(long i = 0; i < row_num ; i ++)
         {
-            double tmp = lm.Fe_lr(Y[i],H[i]);
+            float tmp = lm.Fe_lr(Y[i],H[i]);
             
             if(i < 5){
                 cout<<"Yi: "<<Y[i]<<","<<"Hi: "<<H[i]<<","<<"tmp: "<<tmp<<endl;
@@ -232,7 +233,7 @@ __host__ void techniques::materialize(string table_T, setting _setting, double *
 }
 
 /* Should be no oid-oid mapping here */
-__host__ void techniques::stream(string table_S, string table_R, setting _setting, double *model)
+__host__ void techniques::stream(string table_S, string table_R, setting _setting, float *model)
 {
     DataManagement DM;
     DM.message("Start stream");
@@ -249,26 +250,26 @@ __host__ void techniques::stream(string table_S, string table_R, setting _settin
     long row_num = tableInfo_S[2];
     long row_num_R = tableInfo_R[2];
     
-    double *Y;
-    double *H;
-    double *X;
+    float *Y;
+    float *H;
+    float *X;
     
     //setting
-    double step_size = _setting.step_size;
+    float step_size = _setting.step_size;
     
     //Allocate the memory to the model
-    model = new double[feature_num_S + feature_num_R];
+    model = new float[feature_num_S + feature_num_R];
     //Allocate the memory to the label Array
-    Y = new double[row_num];
+    Y = new float[row_num];
     //Allocate the memory to H
-    H = new double[row_num];
+    H = new float[row_num];
     //Allocate the memory to X
-    X = new double[row_num];
+    X = new float[row_num];
     
-    double F = 0.00;
-    double F_partial = 0.00;
-    double r_curr = 0.00;
-    double r_prev = 0.00;
+    float F = 0.00;
+    float F_partial = 0.00;
+    float r_curr = 0.00;
+    float r_prev = 0.00;
     int k = 0;
     
     for(int i = 0; i < feature_num; i ++)
@@ -289,7 +290,7 @@ __host__ void techniques::stream(string table_S, string table_R, setting _settin
     {
         printf("Start fetching KKMR reference\n");
         //OID-OID Mapping (Key Foreign-Key Mapping Reference)
-        double *KKMR = new double[row_num];
+        float *KKMR = new float[row_num];
         //Read the fk column(referred rid in R) in table S, rid column in R
         ifstream fk;
         //Load the fk to KKMR
@@ -300,7 +301,7 @@ __host__ void techniques::stream(string table_S, string table_R, setting _settin
             cerr<<"Error Message: "<<"Cannot load the fk column."<<endl;
             exit(1);
         }
-        fk.read((char *)KKMR, row_num*(sizeof(double)));
+        fk.read((char *)KKMR, row_num*(sizeof(float)));
         fk.close();
         printf("Finish fetchig KKMR reference\n");
         
@@ -315,7 +316,7 @@ __host__ void techniques::stream(string table_S, string table_R, setting _settin
             }
             else
             {
-                double *tmp_buffer = new double[row_num_R];
+                float *tmp_buffer = new float[row_num_R];
                 DM.fetchColumn(fields_R[1+j-feature_num_S], row_num_R, tmp_buffer);
                 for(long m = 0; m < row_num; m ++)
                 {
@@ -333,13 +334,13 @@ __host__ void techniques::stream(string table_S, string table_R, setting _settin
             }
             
             //Store the old W(j)
-            double W_j = model[j];
+            float W_j = model[j];
             
             //Update the current coordinate
             model[j] = model[j] - step_size * F_partial;
             
             
-            double diff = model[j] - W_j;
+            float diff = model[j] - W_j;
             
             //Update the intermediate variable
             //H = H + (Wj - old_Wj)* X(,j)
@@ -354,7 +355,7 @@ __host__ void techniques::stream(string table_S, string table_R, setting _settin
         F = 0.00;
         for(long i = 0; i < row_num ; i ++)
         {
-            double tmp = lm.Fe_lr(Y[i],H[i]);
+            float tmp = lm.Fe_lr(Y[i],H[i]);
             F += tmp;
         }
         
@@ -389,7 +390,7 @@ __host__ void techniques::stream(string table_S, string table_R, setting _settin
 }
 
 
-__host__ void techniques::factorize(string table_S, string table_R, setting _setting, double *model)
+__host__ void techniques::factorize(string table_S, string table_R, setting _setting, float *model)
 {
     DataManagement DM;
     DM.message("Start factorize");
@@ -408,7 +409,7 @@ __host__ void techniques::factorize(string table_S, string table_R, setting _set
     
     printf("Start fetching KKMR reference\n");
     //OID-OID Mapping (Key Foreign-Key Mapping Reference)
-    double *KKMR = new double[row_num];
+    float *KKMR = new float[row_num];
     //Read the fk column(referred rid in R) in table S, rid column in R
     ifstream fk;
     //Load the fk to KKMR
@@ -419,30 +420,30 @@ __host__ void techniques::factorize(string table_S, string table_R, setting _set
         cerr<<"Error Message: "<<"Cannot load the fk column."<<endl;
         exit(1);
     }
-    fk.read((char *)KKMR, row_num*(sizeof(double)));
+    fk.read((char *)KKMR, row_num*(sizeof(float)));
     fk.close();
     //printf("Finish fetchig KKMR reference\n");
     
-    double *Y;
-    double *H;
-    double *X;
+    float *Y;
+    float *H;
+    float *X;
     
     //setting
-    double step_size = _setting.step_size;
+    float step_size = _setting.step_size;
     
     //Allocate the memory to the model
-    model = new double[feature_num_S + feature_num_R];
+    model = new float[feature_num_S + feature_num_R];
     //Allocate the memory to the label Array
-    Y = new double[row_num];
+    Y = new float[row_num];
     //Allocate the memory to H
-    H = new double[row_num];
+    H = new float[row_num];
     //Allocate the memory to X
-    X = new double[row_num];
+    X = new float[row_num];
     
-    double F = 0.00;
-    double F_partial = 0.00;
-    double r_curr = 0.00;
-    double r_prev = 0.00;
+    float F = 0.00;
+    float F_partial = 0.00;
+    float r_curr = 0.00;
+    float r_prev = 0.00;
     int k = 0;
     
     for(int i = 0; i < feature_num; i ++)
@@ -477,13 +478,13 @@ __host__ void techniques::factorize(string table_S, string table_R, setting _set
                 }
                 
                 //Store the old W(j)
-                double W_j = model[j];
+                float W_j = model[j];
                 
                 //Update the current coordinate
                 model[j] = model[j] - step_size * F_partial;
                 cout<<"model("<<j<<"): "<<model[j]<<endl;
                 
-                double diff = model[j] - W_j;
+                float diff = model[j] - W_j;
                 //Update the intermediate variable
                 //H = H + (Wj - old_Wj)* X(,j)
                 for(long m = 0; m < row_num; m ++ )
@@ -493,10 +494,10 @@ __host__ void techniques::factorize(string table_S, string table_R, setting _set
             }
             else
             {
-                double **tmp_buffer = new double*[2];
+                float **tmp_buffer = new float*[2];
                 for(int i = 0; i < 2; i ++)
                 {
-                    tmp_buffer[i] = new double[row_num_R];
+                    tmp_buffer[i] = new float[row_num_R];
                     for(long k = 0; k < row_num_R; k ++)
                     {
                         tmp_buffer[i][k] = 0.00;
@@ -517,13 +518,13 @@ __host__ void techniques::factorize(string table_S, string table_R, setting _set
                 
                 
                 //Store the old W(j)
-                double W_j = model[j];
+                float W_j = model[j];
                 
                 //Update the current coordinate
                 model[j] = model[j] - step_size * F_partial;
                 cout<<"model("<<j<<"): "<<model[j]<<endl;
                 
-                double diff = model[j] - W_j;
+                float diff = model[j] - W_j;
 
                 
                 //Factorized computation
@@ -553,7 +554,7 @@ __host__ void techniques::factorize(string table_S, string table_R, setting _set
         F = 0.00;
         for(int i = 0; i < row_num ; i ++)
         {
-            double tmp = lm.Fe_lr(Y[i],H[i]);
+            float tmp = lm.Fe_lr(Y[i],H[i]);
             F += tmp;
         }
         
@@ -587,10 +588,10 @@ __host__ void techniques::factorize(string table_S, string table_R, setting _set
 
 }
 
-__host__ bool techniques::stop(int k, double r_prev, double r_curr, setting &setting)
+__host__ bool techniques::stop(int k, float r_prev, float r_curr, setting &setting)
 {
-    double iter_num = k;
-    double difference = abs(r_prev - r_curr);
+    float iter_num = k;
+    float difference = abs(r_prev - r_curr);
     
     if( iter_num == setting.iter_num || difference <= setting.error)
     {
@@ -611,7 +612,7 @@ __host__ bool techniques::stop(int k, double r_prev, double r_curr, setting &set
 
 //specific techniques selection: flag (for generalization purpose)
 
-__host__ void techniques::SGD(vector< vector<double> > data, setting _setting, double *&model, int feature_num)
+__host__ void techniques::SGD(vector< vector<float> > data, setting _setting, float *&model, int feature_num)
 {
     DataManagement::message("Start SGD");
     long data_size = data.size();
@@ -625,10 +626,10 @@ __host__ void techniques::SGD(vector< vector<double> > data, setting _setting, d
     
     linear_models lm;
     //setting
-    double step_size = _setting.step_size;
+    float step_size = _setting.step_size;
     
     //Allocate the memory to model
-    model = new double[feature_num];
+    model = new float[feature_num];
     
     for(int i = 0; i < feature_num; i ++)
     {
@@ -637,16 +638,16 @@ __host__ void techniques::SGD(vector< vector<double> > data, setting _setting, d
     }
     
     //Loss Function
-    double F = 0.00;
-    double r_curr = 0.00;
-    double r_prev = 0.00;
+    float F = 0.00;
+    float r_curr = 0.00;
+    float r_prev = 0.00;
     int k = 0;
     
     do
     {
         r_prev = F;
         F = 0.00;
-        vector<double> gradient(feature_num,0.00);
+        vector<float> gradient(feature_num,0.00);
         
         //Shuffling
         shuffling_index = shuffle(original_index_set, (unsigned)time(NULL));
@@ -664,7 +665,7 @@ __host__ void techniques::SGD(vector< vector<double> > data, setting _setting, d
             long cur_index = shuffling_index[j];
             
             //Update the model
-            double output = 0.00;
+            float output = 0.00;
             for(int k = 0; k < feature_num; k ++)
             {
                 output += model[k]*data[cur_index][k+2];
@@ -681,12 +682,12 @@ __host__ void techniques::SGD(vector< vector<double> > data, setting _setting, d
         //Calculate F
         for(long j = 0; j < data_size; j ++)
         {
-            double output = 0.00;
+            float output = 0.00;
             for(int k = 0; k < feature_num; k ++)
             {
                 output += model[k]*data[j][k+2];
             }
-            double tmp = lm.Fe_lr(data[j][1], output);
+            float tmp = lm.Fe_lr(data[j][1], output);
             F += tmp;
         }
         
@@ -715,17 +716,17 @@ __host__ void techniques::SGD(vector< vector<double> > data, setting _setting, d
 
 }
 
-__host__  void techniques::BGD(vector< vector<double> > data, setting _setting, double *&model, int feature_num)
+__host__  void techniques::BGD(vector< vector<float> > data, setting _setting, float *&model, int feature_num)
 {
     DataManagement::message("Start BGD");
     long data_size = data.size();
     
     // linear_models lm;
     //setting
-    double step_size = _setting.step_size;
+    float step_size = _setting.step_size;
     
     //Allocate the memory to the model
-    model = new double[feature_num];
+    model = new float[feature_num];
     
     for(int i = 0; i < feature_num; i ++)
     {
@@ -733,22 +734,22 @@ __host__  void techniques::BGD(vector< vector<double> > data, setting _setting, 
     }
     
     //Loss Function
-    double F = 0.00;
-    double r_curr = 0.00;
-    double r_prev = 0.00;
+    float F = 0.00;
+    float r_curr = 0.00;
+    float r_prev = 0.00;
     int k = 0;
     
     do
     {
         r_prev = F;
         F = 0.00;
-        vector<double> gradient(feature_num,0.00);
+        vector<float> gradient(feature_num,0.00);
         
         for(long j = 0; j < data_size; j ++)
         {
             
             //Update the model
-            double output = 0.00;
+            float output = 0.00;
             for(int k = 0; k < feature_num; k ++)
             {
                 output += model[k]*data[j][2+k];
@@ -769,12 +770,12 @@ __host__  void techniques::BGD(vector< vector<double> > data, setting _setting, 
         
         for(long j = 0; j < data_size; j ++)
         {
-            double output = 0.00;
+            float output = 0.00;
             for(int k = 0; k < feature_num; k ++)
             {
                 output += model[k]*data[j][2+k];
             }
-            double tmp = lm.Fe_lr(data[j][1], output);
+            float tmp = lm.Fe_lr(data[j][1], output);
             cout<<"tmp loss: "<<tmp<<endl;
             F += tmp;
         }
@@ -806,7 +807,7 @@ __host__  void techniques::BGD(vector< vector<double> > data, setting _setting, 
 
 }
 
-__host__ void techniques::classify(vector< vector<double> > data, vector<double> model)
+__host__ void techniques::classify(vector< vector<float> > data, vector<float> model)
 {
     linear_models lm;
     // Count the number of correct classifcation
@@ -820,10 +821,10 @@ __host__ void techniques::classify(vector< vector<double> > data, vector<double>
     int featureNum = (int)model.size();
     for(long i = 0; i < data_size; i ++)
     {
-        double actual_label = data[i][1];
-        double predicted_label = 0.00;
-        double confidence = 0.00;
-        double output = 0.00;
+        float actual_label = data[i][1];
+        float predicted_label = 0.00;
+        float confidence = 0.00;
+        float output = 0.00;
         for(int j = 0; j < featureNum; j ++)
         {
             output += model[j]*data[i][2+j];
@@ -850,10 +851,10 @@ __host__ void techniques::classify(vector< vector<double> > data, vector<double>
         cout<<"Confidence: "<<confidence<<endl;
         cout<<"Actual Label: "<<actual_label<<","<<"Predicted Label: "<<predicted_label<<endl;
     }
-    cout<<"Correcteness: "<<(double)count/(double)data_size<<endl;
+    cout<<"Correcteness: "<<(float)count/(float)data_size<<endl;
     
     cout<<"Predict the newest day: "<<endl;
-    vector<double> toBePredicted;
+    vector<float> toBePredicted;
     toBePredicted.push_back(1);
     for(int i = 0; i < 4; i ++)
     {
@@ -871,7 +872,7 @@ __host__ void techniques::classify(vector< vector<double> > data, vector<double>
     toBePredicted.push_back(1);
     toBePredicted.push_back(0.15);
     
-    double output = 0.00;
+    float output = 0.00;
     for(int j = 0; j < featureNum; j ++)
     {
         output += model[j]*toBePredicted[j];
