@@ -33,7 +33,6 @@ __global__ void gradientkl(float* dY, float* dH, float* dX, float* dmul_arr, lon
     if(Idx < row_num) {
         dmul_arr[Idx] =  -dY[Idx]/(1+exp(dY[Idx]*dH[Idx]))*dX[Idx];
     }
-    
 }
 
 __global__ void backkl(float* dH, float* dX, float diff, long row_num) {

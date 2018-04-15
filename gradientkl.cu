@@ -9,9 +9,10 @@ __global__ void G_lrcache(double* dY, double* dH, double* cuda_cache, double* dm
 {
     // F_partial += gradientCompute(Y[i],H[i],lm)*cache[cur_index][i];    
     long Idx =  blockIdx.x * blockDim.x + threadIdx.x;
-    if(Idx < row_num) {
-        dmul[Idx] = -(dY[Idx] / (1 + exp(dY[Idx] * dH[Idx])))*(*((double*)((char*)cuda_cache + cur_index * pitch) + Idx));        
-    }
+    if(Idx < row_num) {    
+        dmul[Idx] = -(dY[Idx] / (1 + exp(dY[Idx] * dH[Idx])))*cuda_cache[cur_index*pitch/sizeof(double) + Idx];        
+    	//dmul[Idx] = -(dY[Idx] / (1 + exp(dY[Idx] * dH[Idx])))* (*(cuda_cache + Idx*pitch/sizeof(double)+cur_index));
+	}
 }
 
 __global__ void G_lrkl(double* dY, double* dH, double* dX, double* dmul, long row_num)
@@ -35,8 +36,8 @@ __global__ void G_lrloss(double* dY, double* dH, double* dmul, long row_num)
 __global__ void H_cache(double* dH, double* cuda_cache, double diff, int cur_index, int pitch, long row_num)
 {
     long Idx =  blockIdx.x * blockDim.x + threadIdx.x;
-    if(Idx < row_num) {
-        dH[Idx] = dH[Idx] + diff * (*((double*)((char*)cuda_cache + cur_index*pitch) + Idx));        
+    if(Idx < row_num) { 
+        dH[Idx] = dH[Idx] + diff * cuda_cache[cur_index*pitch/sizeof(double) + Idx];        
     }    
 }
 

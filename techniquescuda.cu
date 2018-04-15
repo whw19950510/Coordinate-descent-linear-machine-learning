@@ -145,10 +145,11 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
         DM.message("No space on device for Intermediate variables");
         exit(1);
     }
+	// Actually need to consider the extra variable malloc for reducing
     // May need further calculation for cache in the future
     printf("avaiable cache number is %d\n", avail_cache);    
     if(avail_cache > 0) {
-        if(cudaSuccess != cudaMallocPitch((void**)&cuda_cache, &pitch, avail_cache * sizeof(double), row_num * sizeof(double))) {
+        if(cudaSuccess != cudaMallocPitch((void**)&cuda_cache, &pitch, row_num * sizeof(double), avail_cache)) {
             DM.message("No space on device for variable cache");
         } else {
             DM.message("Allocate GPU-Cache successfully on GPU");
@@ -191,7 +192,7 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
         DM.fetchColumn(fields[i+2], row_num, cache + i*row_num);
     }
     // printf("Test cache data is %lf\n", *(cache + (avail_cache - 1)*row_num));
-    if(cudaSuccess != cudaMemcpy2D(cuda_cache, pitch, cache, avail_cache*sizeof(double), avail_cache*sizeof(double), row_num, cudaMemcpyHostToDevice)) {
+    if(cudaSuccess != cudaMemcpy2D(cuda_cache, pitch, cache, row_num*sizeof(double), row_num*sizeof(double), avail_cache, cudaMemcpyHostToDevice)) {
         DM.message("No enough space on GPU memory for caching feature");
     } else {
         DM.message("GPU can cache all data into main memory");
