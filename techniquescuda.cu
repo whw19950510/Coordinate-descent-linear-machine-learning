@@ -157,6 +157,25 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
         }
     }
 
+    DM.fetchColumn(fields[1], row_num, Y);
+    cudaMemcpyAsync(dY, Y, row_num*sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemsetAsync(dH, 0, row_num*sizeof(double));
+
+    // Caching & copy data for training
+    printf("\n");
+    printf("Avail_col: %d\n", avail_cache);
+    for(int i = 0; i < avail_cache; i ++)
+    {
+        DM.fetchColumn(fields[i+2], row_num, cache + i*row_num);
+    }
+   
+    // printf("Test cache data is %lf\n", *(cache + (avail_cache - 1)*row_num));
+    if(cudaSuccess != cudaMemcpy2DAsync(cuda_cache, pitch, cache, row_num*sizeof(double), row_num*sizeof(double), avail_cache, cudaMemcpyHostToDevice)) {
+        DM.message("No enough space on GPU memory for caching feature");
+    } else {
+        DM.message("GPU can cache all data into main memory");
+    }
+
     // Initialization of variables for loss and gradient
     // Transfer data between GPU & CPU, dY label & dH always remains in GPU memory
     double F = 0.00;
@@ -165,10 +184,6 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     double r_prev = 0.00;
     int iters = 0;
     memset(model, 0.00, sizeof(double)*feature_num);
-    
-    DM.fetchColumn(fields[1], row_num, Y);
-    cudaMemcpy(dY, Y, row_num*sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemset(dH, 0, row_num*sizeof(double));
 
     // Kernal call parameters
     const int threadsPerBlock = 512;
@@ -184,19 +199,6 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     shuffling_index = shuffle(original_index_set, (unsigned)time(NULL));
 	shuffling_index = original_index_set;    
 
-    // Caching & copy data for training
-    printf("\n");
-    printf("Avail_col: %d\n", avail_cache);
-    for(int i = 0; i < avail_cache; i ++)
-    {
-        DM.fetchColumn(fields[i+2], row_num, cache + i*row_num);
-    }
-    // printf("Test cache data is %lf\n", *(cache + (avail_cache - 1)*row_num));
-    if(cudaSuccess != cudaMemcpy2D(cuda_cache, pitch, cache, row_num*sizeof(double), row_num*sizeof(double), avail_cache, cudaMemcpyHostToDevice)) {
-        DM.message("No enough space on GPU memory for caching feature");
-    } else {
-        DM.message("GPU can cache all data into main memory");
-    }
     // Training process, maybe too much judge logic to improve the performance
     do {
         // Update one coordinate each time
@@ -204,7 +206,7 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
         {
             int cur_index = shuffling_index.at(j);
             F_partial = 0.00;
-            
+            cudaDeviceSynchronize();
             // If the column corresponding to the current updating coordinate is in the cache, no extra I/O is needed
             if(cur_index < avail_cache)
             {
@@ -248,7 +250,7 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
                 cudaDeviceSynchronize();                
             }
         }
-        cudaMemcpy(H, dH, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
+        // cudaMemcpy(H, dH, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
         r_prev = F;
         // Caculate F
         F = 0.00;
