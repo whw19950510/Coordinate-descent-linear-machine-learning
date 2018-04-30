@@ -17,6 +17,8 @@
 #include "DataManagement.h"
 #include "gradientkl.cu"
 #include "linear_models.h"
+#include "omp.h"
+#include <cub/cub.cuh>
 
 techniques::techniques(){};
 
@@ -48,6 +50,10 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     DataManagement DM;
     DM.message("Start materialize");
     
+    // Set Timer
+    clock_t c_start;
+    clock_t c_end;
+
     // Get the table information and column names
     vector<long> tableInfo(3);
     vector<string> fields = DM.getFieldNames(table_T, tableInfo);
@@ -112,9 +118,9 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
         // Allocate the memory to X
         X = new double[row_num];
     }
-    Y = new double[row_num];
-    H = new double[row_num];
-    model = new double[feature_num];
+    Y = (double*)malloc(sizeof(double)*row_num);
+    H = (double*)malloc(sizeof(double)*row_num);
+    model = (double*)malloc(sizeof(double)*row_num);
 
     // Dynamic allocation for device variables
     // H, Y definitly need to be allocated & cached
@@ -124,7 +130,7 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     double* cuda_cache;
     double* dmul;
     double* mul;
-    mul = new double[row_num];
+    mul = (double*)malloc(sizeof(double)*row_num);
     size_t pitch;
     
     if(avail_cache < feature_num) {
@@ -157,10 +163,19 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
         }
     }
 
+    // double* dF_partial;
+    // cudaMalloc((void**)&dF_partial, sizeof(double));
+    // double* dF;
+    // cudaMalloc((void**)&dF, sizeof(double));
+    // void *d_temp_storage = NULL;
+    // size_t   temp_storage_bytes = 0;
+    // cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, dmul, dF_partial, row_num);
+    // cudaMalloc((void**)&d_temp_storage, temp_storage_bytes);
+ 
     DM.fetchColumn(fields[1], row_num, Y);
     cudaMemcpyAsync(dY, Y, row_num*sizeof(double), cudaMemcpyHostToDevice);
     cudaMemsetAsync(dH, 0, row_num*sizeof(double));
-
+ 
     // Caching & copy data for training
     printf("\n");
     printf("Avail_col: %d\n", avail_cache);
@@ -186,7 +201,7 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     memset(model, 0.00, sizeof(double)*feature_num);
 
     // Kernal call parameters
-    const int threadsPerBlock = 512;
+    const int threadsPerBlock = 1024;
     const int blocksPerGrid = row_num/threadsPerBlock + 1;
 
     // Shuffling process
@@ -201,18 +216,30 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
 
     // Training process, maybe too much judge logic to improve the performance
     do {
+        c_start = clock();
         // Update one coordinate each time
         for(int j = 0; j < feature_num; j ++)
         {
             int cur_index = shuffling_index.at(j);
             F_partial = 0.00;
-            cudaDeviceSynchronize();
+            // cudaMemsetAsync(dF_partial, 0, sizeof(double));
+            // cudaDeviceSynchronize();
+
             // If the column corresponding to the current updating coordinate is in the cache, no extra I/O is needed
             if(cur_index < avail_cache)
             {
-                G_lrcache<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, cuda_cache, dmul, cur_index, row_num, pitch);
+                if(strcmp("lr", lm))
+                    G_lrcache<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, cuda_cache, dmul, cur_index, row_num, pitch);
+                else if(strcmp("lsr", lm))
+                    G_lsrcache<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, cuda_cache, dmul, cur_index, row_num, pitch);
+                else if(strcmp("lsvm", lm))  
+                    G_svmcache<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, cuda_cache, dmul, cur_index, row_num, pitch);
+                
                 cudaDeviceSynchronize();
+                // cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, dmul, dF_partial, row_num);
+                // cudaMemcpy(&F_partial, dF_partial,sizeof(double),cudaMemcpyDeviceToHost);
                 cudaMemcpy(mul, dmul, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
+                // #pragma omp parallel for reduction (+:F_partial)
                 for(long k = 0; k < row_num; k++)
                     F_partial += mul[k];
                 // printf("F_partial value is %lf\n", F_partial);
@@ -223,9 +250,16 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
                 DM.fetchColumn(fields[cur_index+2], row_num, X);
                 cudaMemcpy(dX, X, sizeof(double) * row_num, cudaMemcpyHostToDevice);
                 // Compute the partial gradient
-                G_lrkl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul, row_num);
+                if(strcmp("lr", lm))                
+                    G_lrkl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul, row_num);
+                else if(strcmp("lsr", lm))
+                    G_lsrkl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul, row_num);
+                else if(strcmp("lsvm", lm))  
+                    G_svmkl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul, row_num);                    
+                
                 cudaDeviceSynchronize();
                 cudaMemcpy(mul, dmul, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
+                // #pragma omp parallel for reduction (+:F_partial)
                 for(long k = 0; k < row_num; k++)
                     F_partial += mul[k];
             }
@@ -250,26 +284,32 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
                 cudaDeviceSynchronize();                
             }
         }
-        // cudaMemcpy(H, dH, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
         r_prev = F;
         // Caculate F
         F = 0.00;
-        G_lrloss<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dmul, row_num);
+        // cudaMemsetAsync(dF,0,sizeof(double));
+        if(strcmp("lr", lm))                        
+            G_lrloss<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dmul, row_num);
+        else if(strcmp("lsr", lm))
+            G_lsrloss<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dmul, row_num);
+        else if(strcmp("lsvm", lm))
+            G_svmloss<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dmul, row_num);
+        
         cudaDeviceSynchronize();                
         cudaMemcpy(mul, dmul, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
+        // #pragma omp parallel for reduction (+:F)
         for(long k = 0; k < row_num; k++)
         {
             F += mul[k];
         }
-        // for(long i = 0; i < row_num ; i ++)
-        // {
-        //     double tmp = lossCompute(Y[i],H[i],lm);
-        //     F += tmp;
-        // }
+        // cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, dmul, dF, row_num);
+        // cudaMemcpy(&F, dF, sizeof(double),cudaMemcpyDeviceToHost);
+        F = F/(double)row_num;
         cout<<"loss: " <<F<<endl;
-		cout<< F << endl;
         r_curr = F;
         iters ++;
+        c_end = clock();
+        cout<<"Iteration "<<iters-1<<" :"<<1000*(c_end-c_start)/CLOCKS_PER_SEC<<"ms\n";
     }
     while(!stop(iters , r_prev, r_curr, _setting));
     
@@ -278,6 +318,7 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     cudaFree(dY);
     cudaFree(dH);
     cudaFree(dmul);
+    cudaFree(cuda_cache);
     if( avail_cache < feature_num ){
         delete [] X;
         cudaFree(dX);
