@@ -17,8 +17,7 @@
 #include "DataManagement.h"
 #include "gradientkl.cu"
 #include "linear_models.h"
-#include "omp.h"
-#include <cub/cub.cuh>
+// #include <cub/cub.cuh>
 #include <thrust/reduce.h>
 #include <thrust/execution_policy.h>
 #include <thrust/device_ptr.h>
@@ -177,7 +176,8 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     DM.fetchColumn(fields[1], row_num, Y);
     cudaMemcpyAsync(dY, Y, row_num*sizeof(double), cudaMemcpyHostToDevice);
     cudaMemsetAsync(dH, 0, row_num*sizeof(double));
- 
+    
+    printf("model used %s\n", lm);
     // Caching & copy data for training
     printf("\n");
     printf("Avail_col: %d\n", avail_cache);
@@ -230,11 +230,11 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
             // If the column corresponding to the current updating coordinate is in the cache, no extra I/O is needed
             if(cur_index < avail_cache)
             {
-                if(strcmp("lr", lm))
+                if(strcmp("lr", lm) == 0)
                     G_lrcache<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, cuda_cache, dmul, cur_index, row_num, pitch);
-                else if(strcmp("lsr", lm))
+                else if(strcmp("lsr", lm) == 0)
                     G_lsrcache<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, cuda_cache, dmul, cur_index, row_num, pitch);
-                else if(strcmp("lsvm", lm))  
+                else if(strcmp("lsvm", lm) == 0)  
                     G_svmcache<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, cuda_cache, dmul, cur_index, row_num, pitch);
                 
                 cudaDeviceSynchronize();
@@ -253,11 +253,11 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
                 DM.fetchColumn(fields[cur_index+2], row_num, X);
                 cudaMemcpy(dX, X, sizeof(double) * row_num, cudaMemcpyHostToDevice);
                 // Compute the partial gradient
-                if(strcmp("lr", lm))                
+                if(strcmp("lr", lm) == 0)                
                     G_lrkl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul, row_num);
-                else if(strcmp("lsr", lm))
+                else if(strcmp("lsr", lm) == 0)
                     G_lsrkl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul, row_num);
-                else if(strcmp("lsvm", lm))  
+                else if(strcmp("lsvm", lm) == 0)  
                     G_svmkl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul, row_num);                    
                 
                 cudaDeviceSynchronize();
@@ -292,11 +292,11 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
         // Caculate F
         F = 0.00;
         // cudaMemsetAsync(dF,0,sizeof(double));
-        if(strcmp("lr", lm))                        
+        if(strcmp("lr", lm) == 0)                        
             G_lrloss<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dmul, row_num);
-        else if(strcmp("lsr", lm))
+        else if(strcmp("lsr", lm) == 0)
             G_lsrloss<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dmul, row_num);
-        else if(strcmp("lsvm", lm))
+        else if(strcmp("lsvm", lm) == 0)
             G_svmloss<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dmul, row_num);
         
         cudaDeviceSynchronize();  

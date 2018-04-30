@@ -60,11 +60,7 @@ __global__ void G_svmcache(double* dY, double*dH, double* cuda_cache, double* dm
 {
     long Idx =  blockIdx.x * blockDim.x + threadIdx.x;
     if(Idx < row_num) { 
-        if(dY[Idx] * dH[Idx] < 1) {
-            dmul[Idx] = -1 * cuda_cache[cur_index*pitch/sizeof(double) + Idx];
-        } else {
-            dmul[Idx] = 0;
-        }
+        dmul[Idx] = dY[Idx] * dH[Idx] < 1 ? -1 * cuda_cache[cur_index*pitch/sizeof(double) + Idx]: 0;
 	}
 }
 
@@ -72,11 +68,7 @@ __global__ void G_svmkl(double* dY, double* dH, double* dX, double* dmul, long r
 {
     long Idx =  blockIdx.x * blockDim.x + threadIdx.x;
     if(Idx < row_num) {
-        if(dY[Idx] * dH[Idx] < 1) {
-            dmul[Idx] = -1 * dX[Idx];
-        } else {
-            dmul[Idx] = 0;
-        }
+        dmul[Idx] = dY[Idx] * dH[Idx] < 1 ? -1 * dX[Idx]:0;
     }
 }
 
