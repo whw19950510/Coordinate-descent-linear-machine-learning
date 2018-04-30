@@ -51,7 +51,7 @@ __global__ void G_lsrkl(double* dY, double* dH, double* dX, double* dmul, long r
 __global__ void G_lsrloss(double* dY, double* dH, double* dmul, long row_num)
 {
     if(Idx < row_num) {
-        dmul[Idx] = (dY[i] - dH[i]) * (dY[i] - dH[i]);
+        dmul[Idx] = (dY[Idx] - dH[Idx]) * (dY[Idx] - dH[Idx]);
     } 
 }
 
@@ -84,7 +84,7 @@ __global__ void G_svmloss(double* dY, double* dH, double* dmul, long row_num)
 {
     long Idx =  blockIdx.x * blockDim.x + threadIdx.x;   
     if(Idx < row_num) {
-        dmul[Idx] = fmax(0, 1 - dY[i] * dH[i]);
+        dmul[Idx] = fmax(0.0, 1 - dY[Idx] * dH[Idx]);
     } 
 }
 
@@ -95,6 +95,7 @@ __global__ void H_cache(double* dH, double* cuda_cache, double diff, int cur_ind
     if(Idx < row_num) { 
         // fma() = x * y + z
         // dH[Idx] = dH[Idx] + diff * cuda_cache[cur_index*pitch/sizeof(double) + Idx];        
+        long Idx =  blockIdx.x * blockDim.x + threadIdx.x;           
         dH[Idx] = fma(diff, cuda_cache[cur_index*pitch/sizeof(double) + Idx], dH[Idx]);
     }    
 }

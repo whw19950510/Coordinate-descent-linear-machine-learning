@@ -19,7 +19,9 @@
 #include "linear_models.h"
 #include "omp.h"
 #include <cub/cub.cuh>
-
+#include <thrust/reduce.h>
+#include <thrust/execution_policy.h>
+#include <thrust/device_ptr.h>
 techniques::techniques(){};
 
 /**
@@ -116,11 +118,11 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     if(avail_cache < feature_num)
     {
         // Allocate the memory to X
-        X = new double[row_num];
+        X = (double*)malloc(sizeof(double)*row_num);
     }
     Y = (double*)malloc(sizeof(double)*row_num);
     H = (double*)malloc(sizeof(double)*row_num);
-    model = (double*)malloc(sizeof(double)*row_num);
+    model = (double*)malloc(sizeof(double)*feature_num);
 
     // Dynamic allocation for device variables
     // H, Y definitly need to be allocated & cached
@@ -129,12 +131,12 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     double* dX;
     double* cuda_cache;
     double* dmul;
-    double* mul;
-    mul = (double*)malloc(sizeof(double)*row_num);
+    // double* mul;
+    // mul = (double*)malloc(sizeof(double)*row_num);
     size_t pitch;
     
     if(avail_cache < feature_num) {
-        if(cudaSuccess != cudaMalloc((void**)&dX, row_num*sizeof(double))) {
+        if(cudaSuccess != cudaMalloc((void**)&dX, row_num * sizeof(double))) {
             DM.message("No space on device for single column feature");
             exit(1);
         }
@@ -190,7 +192,7 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     } else {
         DM.message("GPU can cache all data into main memory");
     }
-
+    thrust::device_ptr<double> wrapped_ptr = thrust::device_pointer_cast(dmul);
     // Initialization of variables for loss and gradient
     // Transfer data between GPU & CPU, dY label & dH always remains in GPU memory
     double F = 0.00;
@@ -223,7 +225,7 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
             int cur_index = shuffling_index.at(j);
             F_partial = 0.00;
             // cudaMemsetAsync(dF_partial, 0, sizeof(double));
-            // cudaDeviceSynchronize();
+            cudaDeviceSynchronize();
 
             // If the column corresponding to the current updating coordinate is in the cache, no extra I/O is needed
             if(cur_index < avail_cache)
@@ -236,12 +238,13 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
                     G_svmcache<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, cuda_cache, dmul, cur_index, row_num, pitch);
                 
                 cudaDeviceSynchronize();
+                F_partial = thrust::reduce(thrust::device, wrapped_ptr, wrapped_ptr + row_num);
                 // cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, dmul, dF_partial, row_num);
                 // cudaMemcpy(&F_partial, dF_partial,sizeof(double),cudaMemcpyDeviceToHost);
-                cudaMemcpy(mul, dmul, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
+                // cudaMemcpy(mul, dmul, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
                 // #pragma omp parallel for reduction (+:F_partial)
-                for(long k = 0; k < row_num; k++)
-                    F_partial += mul[k];
+                // for(long k = 0; k < row_num; k++)
+                //     F_partial += mul[k];
                 // printf("F_partial value is %lf\n", F_partial);
             }
             else
@@ -258,16 +261,17 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
                     G_svmkl<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dX, dmul, row_num);                    
                 
                 cudaDeviceSynchronize();
-                cudaMemcpy(mul, dmul, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
+                F_partial = thrust::reduce(thrust::device, wrapped_ptr, wrapped_ptr + row_num);
+                // cudaMemcpy(mul, dmul, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
                 // #pragma omp parallel for reduction (+:F_partial)
-                for(long k = 0; k < row_num; k++)
-                    F_partial += mul[k];
+                // for(long k = 0; k < row_num; k++)
+                //     F_partial += mul[k];
             }
             // Store the old W(j)
             double W_j = model[cur_index];
             
             // Update the current coordinate
-            model[cur_index] = model[cur_index] - step_size * F_partial;
+            model[cur_index] = model[cur_index] - step_size * (F_partial/row_num);
             std::cout << "model[" << cur_index << "]: " << model[cur_index] << std::endl;
             double diff = model[cur_index] - W_j;
     
@@ -295,13 +299,14 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
         else if(strcmp("lsvm", lm))
             G_svmloss<<<blocksPerGrid, threadsPerBlock>>>(dY, dH, dmul, row_num);
         
-        cudaDeviceSynchronize();                
-        cudaMemcpy(mul, dmul, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
+        cudaDeviceSynchronize();  
+        F = thrust::reduce(thrust::device,wrapped_ptr, wrapped_ptr + row_num);              
+        // cudaMemcpy(mul, dmul, sizeof(double)*row_num, cudaMemcpyDeviceToHost);
         // #pragma omp parallel for reduction (+:F)
-        for(long k = 0; k < row_num; k++)
-        {
-            F += mul[k];
-        }
+        // for(long k = 0; k < row_num; k++)
+        // {
+        //     F += mul[k];
+        // }
         // cub::DeviceReduce::Sum(d_temp_storage, temp_storage_bytes, dmul, dF, row_num);
         // cudaMemcpy(&F, dF, sizeof(double),cudaMemcpyDeviceToHost);
         F = F/(double)row_num;
@@ -313,24 +318,20 @@ void techniques::materialize(string table_T, setting _setting, double *&model, d
     }
     while(!stop(iters , r_prev, r_curr, _setting));
     
-    delete [] Y;
-    delete [] H;
+    free(Y);
+    free(H);
     cudaFree(dY);
     cudaFree(dH);
     cudaFree(dmul);
     cudaFree(cuda_cache);
     if( avail_cache < feature_num ){
-        delete [] X;
+        free(X);
         cudaFree(dX);
     }
     
     // Clear the cache
     if( avail_cache > 0) {
-        // for(int i = 0; i < avail_cache; i ++)
-        // {
-        //     delete [] cache[i];
-        // }
-        delete [] cache;
+        free(cache);
         cudaFree(cuda_cache);
     } 
     printf("\n");
